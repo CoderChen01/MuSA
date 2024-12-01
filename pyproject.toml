@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "mmsd-benchmark"
+version = "0.1.0"
+description = ""
+authors = ["chenjunjie <wwseyy@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+torch = "^2.5.1"
+transformers = "^4.46.3"
+outlines = ">=0.0.43,<0.1"
+datasets = "^3.1.0"
+openai = "^1.55.2"
+pillow = ">=10.3.0,<11.0.0"
+jsonlines = "^4.0.0"
+click = "^8.1.7"
+loguru = "^0.7.2"
+accelerate = "^1.1.1"
+vllm = "0.6.4"
+
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
