@@ -118,7 +118,7 @@ def process_pipeline(
 @click.option("--api-keys-file-path", type=str, help="API keys file path")
 @click.option("--temperature", type=float, default=0.0, help="Temperature")
 @click.option(
-    "--max-completion-tokens", type=int, default=256, help="Max completion tokens"
+    "--max-completion-tokens", type=int, default=-1, help="Max completion tokens"
 )
 @click.option("--top-p", type=float, default=1.0, help="Top p")
 @click.option("--frequency-penalty", type=float, default=0.0, help="Frequency penalty")
@@ -164,7 +164,7 @@ def run_openai(
 @click.option("--base-urls-file-path", type=str, help="Base urls file path")
 @click.option("--temperature", type=float, default=0.0, help="Temperature")
 @click.option(
-    "--max-completion-tokens", type=int, default=256, help="Max completion tokens"
+    "--max-completion-tokens", type=int, default=-1, help="Max completion tokens"
 )
 @click.option("--top-p", type=float, default=1.0, help="Top p")
 @click.option("--frequency-penalty", type=float, default=0.0, help="Frequency penalty")

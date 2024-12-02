@@ -3,10 +3,10 @@ import json
 import os
 import time
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Union
 
 from loguru import logger
-from openai import OpenAI
+from openai import NOT_GIVEN, NotGiven, OpenAI
 from PIL.ImageFile import ImageFile
 
 SYSTEM_PROMPT = """Analyze the provided text-image pair for sarcasm from both "sarcastic" and "non-sarcastic" perspectives, acknowledging the subjectivity in sarcasm recongnition.
@@ -17,7 +17,7 @@ Follow these steps for each perspective:
 2. **Interaction Analysis**: Identify any incongruities, irony, or exaggerations between the text and image.
 3. **Contextual Evaluation**: Consider cultural or social contexts that may influence sarcasm.
 4. **Confidence Scoring**: Assign an independent confidence score between 0 and 1 for the perspective, without the score being influenced by the other perspective.
-5. **Explanation**: Provide a clear, confident, and reasonable explanation for the score from the respective perspective, explicitly stating "because..." to justify why it is or isn't sarcastic. Ensure that an explanation is always provided, even if the confidence level is low.
+5. **Explanation**: Provide a clear, confident, and reasonable explanation for the score from the respective perspective, explicitly stating "because..." to justify why it is or isn't sarcastic, limited to 5 sentences. Ensure that an explanation is always provided, even if the confidence level is low.
 """
 
 RESPONSE_FORMAT = {
@@ -68,7 +68,7 @@ def create_completion_param(
     image: ImageFile,
     model: str,
     temperature: float = 1.0,
-    max_completion_tokens: int = 256,
+    max_completion_tokens: Union[int, NotGiven] = 256,
     top_p: float = 1.0,
     frequency_penalty: float = 0.0,
     presence_penalty: float = 0.0,
@@ -169,7 +169,7 @@ def openai_requests_map_func(
             image,
             model,
             temperature,
-            max_completion_tokens,
+            max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
             top_p,
             frequency_penalty,
             presence_penalty,
@@ -180,7 +180,10 @@ def openai_requests_map_func(
             try:
                 res = client.chat.completions.create(**req)
                 res = res.to_json()
-                examples[reponse_key_name].append(res)
+                if have_response:
+                    examples[reponse_key_name][i] = res
+                else:
+                    examples[reponse_key_name].append(res)
                 logger.success("{}-{}-{}", examples["id"][i], examples["label"][i], res)
                 success = True
             except Exception:
@@ -248,12 +251,13 @@ def vllm_requests_map_func(
 
         image = examples["image"][i]
         text = examples["text"][i]
+
         req = create_completion_param(
             text,
             image,
             model,
             temperature,
-            max_completion_tokens,
+            max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
             top_p,
             frequency_penalty,
             presence_penalty,
@@ -266,7 +270,10 @@ def vllm_requests_map_func(
                     **req, extra_body=dict(guided_decoding_backend="outlines")
                 )
                 res = res.to_json()
-                examples[reponse_key_name].append(res)
+                if have_response:
+                    examples[reponse_key_name][i] = res
+                else:
+                    examples[reponse_key_name].append(res)
                 logger.success("{}-{}-{}", examples["id"][i], examples["label"][i], res)
                 success = True
             except Exception:
@@ -284,5 +291,43 @@ def vllm_requests_map_func(
                 base_url = get_base_url_from_file(base_urls_file_path, model)
                 client = OpenAI(api_key="EMPTY", base_url=base_url)
                 continue
+
+    return examples
+
+
+def local_data_map_func(
+    examples,
+    models: list[str],
+    local_data: Optional[dict[str, dict]] = None,
+) -> dict:
+
+    for model in models:
+        have_response = False
+        model_name = model.replace("/", "--")
+        reponse_key_name = f"{model_name}_MuSA"
+
+        if reponse_key_name not in examples:
+            examples[reponse_key_name] = []
+        else:
+            have_response = True
+
+        for i in range(len(examples["text"])):
+            if have_response and examples[reponse_key_name][i] != "":
+                logger.info("Already have response for [{}]", examples["id"][i])
+                continue
+
+            id_ = f"{examples['id'][i]}-{model_name}"
+
+            if local_data is not None and id_ in local_data:
+                if have_response:
+                    examples[reponse_key_name][i] = json.dumps(local_data[id_])
+                else:
+                    examples[reponse_key_name].append(json.dumps(local_data[id_]))
+                logger.info("Using local data for [{}]", id_)
+                continue
+
+            logger.info("No local data for [{}]", id_)
+            if not have_response:
+                examples[reponse_key_name].append("")
 
     return examples
