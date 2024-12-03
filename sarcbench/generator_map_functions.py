@@ -3,13 +3,14 @@ import json
 import os
 import time
 from io import BytesIO
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from loguru import logger
-from openai import NOT_GIVEN, NotGiven, OpenAI
+from openai import NOT_GIVEN, LengthFinishReasonError, NotGiven, OpenAI
 from PIL.ImageFile import ImageFile
 
-SYSTEM_PROMPT = """Analyze the provided text-image pair for sarcasm from both "sarcastic" and "non-sarcastic" perspectives, acknowledging the subjectivity in sarcasm recongnition.
+SYSTEM_PROMPT = (
+    lambda x: f"""Analyze the provided text-image pair for sarcasm from both "sarcastic" and "non-sarcastic" perspectives, acknowledging the subjectivity in sarcasm recongnition.
 
 Follow these steps for each perspective:
 
@@ -17,10 +18,11 @@ Follow these steps for each perspective:
 2. **Interaction Analysis**: Identify any incongruities, irony, or exaggerations between the text and image.
 3. **Contextual Evaluation**: Consider cultural or social contexts that may influence sarcasm.
 4. **Confidence Scoring**: Assign an independent confidence score between 0 and 1 for the perspective, without the score being influenced by the other perspective.
-5. **Explanation**: Provide a clear, confident, and reasonable explanation for the score from the respective perspective, explicitly stating "because..." to justify why it is or isn't sarcastic, limited to 5 sentences. Ensure that an explanation is always provided, even if the confidence level is low.
+5. **Explanation**: Provide a clear, confident, and reasonable explanation for the score from the respective perspective, explicitly stating "because..." to justify why it is or isn't sarcastic, limited to {x} sentences. Ensure that an explanation is always provided, even if the confidence level is low.
 """
+)
 
-RESPONSE_FORMAT = {
+RESPONSE_FORMAT = lambda x: {
     "type": "json_schema",
     "json_schema": {
         "name": "multimodal_sarcasm_analysis_from_multiple_perspectives",
@@ -34,7 +36,7 @@ RESPONSE_FORMAT = {
                 },
                 "sarcastic_explanation": {
                     "type": "string",
-                    "description": "Explanation for sarcastic expression, justifying why it is sarcastic, limited to 5 sentences.",
+                    "description": f"Explanation for sarcastic expression, justifying why it is sarcastic, limited to {x} sentences.",
                 },
                 "non_sarcastic_confidence": {
                     "type": "number",
@@ -42,7 +44,7 @@ RESPONSE_FORMAT = {
                 },
                 "non_sarcastic_explanation": {
                     "type": "string",
-                    "description": "Explanation for non-sarcastic expression, justifying why it is non-sarcastic, limited to 5 sentences.",
+                    "description": f"Explanation for non-sarcastic expression, justifying why it is non-sarcastic, limited to {x} sentences.",
                 },
             },
             "required": [
@@ -57,6 +59,17 @@ RESPONSE_FORMAT = {
 }
 
 
+SOFT_NUM_SENTENCES_LIMIT_PROMPTS = [
+    "very short",
+    "a few",
+    "several",
+    "minimal",
+    "very compact",
+    "vary succinct",
+    "only a handlful of",
+]
+
+
 def image_to_base64(image: ImageFile) -> str:
     with BytesIO() as buffered:
         image.save(buffered, format="JPEG")
@@ -67,6 +80,7 @@ def create_completion_param(
     text: str,
     image: ImageFile,
     model: str,
+    soft_num_sentences_limit_prompt: Union[int, str] = 5,
     temperature: float = 1.0,
     max_completion_tokens: Union[int, NotGiven] = 256,
     top_p: float = 1.0,
@@ -77,7 +91,12 @@ def create_completion_param(
     image_data = f"data:image/jpeg;base64,{image_base64}"
 
     messages = [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": SYSTEM_PROMPT(soft_num_sentences_limit_prompt)}
+            ],
+        },
         {
             "role": "user",
             "content": [
@@ -95,20 +114,11 @@ def create_completion_param(
         "top_p": top_p,
         "frequency_penalty": frequency_penalty,
         "presence_penalty": presence_penalty,
-        "response_format": RESPONSE_FORMAT,
+        "response_format": RESPONSE_FORMAT(soft_num_sentences_limit_prompt),
     }
 
 
-def get_api_key_from_file(path: str, exclude_keys: Optional[list[str]] = None) -> str:
-    success = False
-    while not success:
-        try:
-            with open(path, "r") as f:
-                keys: list[str] = json.load(f)
-                success = True
-        except Exception:
-            logger.exception("Error in reading API key file [{}]", path)
-            time.sleep(1 / 10)
+def get_api_key(keys: list[str], exclude_keys: Optional[list[str]] = None) -> str:
 
     if exclude_keys is not None:
         new_keys = [key for key in keys if key not in exclude_keys]
@@ -121,20 +131,49 @@ def get_api_key_from_file(path: str, exclude_keys: Optional[list[str]] = None) -
     return keys[0]
 
 
-def get_base_url_from_file(path: str, model) -> str:
-    while True:
+def get_base_url(
+    base_urls: dict[str, list[str]],
+    model: str,
+    excluded_base_urls: Optional[list[str]] = None,
+) -> str:
+    urls = base_urls[model]
+
+    if excluded_base_urls is not None:
+        new_urls = [url for url in urls if url not in excluded_base_urls]
+
+        if len(new_urls) == 0:
+            new_urls = urls
+
+        return new_urls[0]
+
+    return urls[0]
+
+
+def get_config(path: str, key: str, **kwargs) -> Any:
+
+    success_load = False
+    while not success_load:
         try:
             with open(path, "r") as f:
-                keys: dict[str, str] = json.load(f)
-                return keys[model]
+                data = json.load(f)
+            success_load = True
         except Exception:
-            logger.exception("Error in reading base url file [{}]", path)
+            logger.exception("Error in reading config file [{}]", path)
             time.sleep(1 / 10)
+
+    if key == "api_keys":
+        keys: list[str] = data[key]
+        return get_api_key(keys, **kwargs)
+    elif key == "base_urls":
+        base_urls: dict[str, list[str]] = data[key]
+        return get_base_url(base_urls, **kwargs)
+
+    return data[key]
 
 
 def openai_requests_map_func(
     examples,
-    api_keys_file_path: str,
+    config_file_path: str,
     model: str = "gpt-4o",
     temperature: float = 1.0,
     max_completion_tokens: int = 256,
@@ -143,7 +182,7 @@ def openai_requests_map_func(
     presence_penalty: float = 0.0,
 ) -> dict:
 
-    api_key = get_api_key_from_file(api_keys_file_path)
+    api_key = get_config(config_file_path, "api_keys")
     client = OpenAI(api_key=api_key)
 
     error_count = 0
@@ -164,10 +203,13 @@ def openai_requests_map_func(
 
         image = examples["image"][i]
         text = examples["text"][i]
+
+        expected_num_sentences = 5
         req = create_completion_param(
             text,
             image,
             model,
+            expected_num_sentences,
             temperature,
             max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
             top_p,
@@ -175,22 +217,62 @@ def openai_requests_map_func(
             presence_penalty,
         )
 
+        is_request = True
         success = False
         while not success:
             try:
-                res = client.chat.completions.create(**req)
-                res = res.to_json()
-                if have_response:
-                    examples[reponse_key_name][i] = res
+                if is_request:
+                    res = client.chat.completions.create(**req)
+                    res = res.to_json()
+                    if have_response:
+                        examples[reponse_key_name][i] = res
+                    else:
+                        examples[reponse_key_name].append(res)
+                    logger.success(
+                        "{}-{}-{}", examples["id"][i], examples["label"][i], res
+                    )
+                    success = True
                 else:
-                    examples[reponse_key_name].append(res)
-                logger.success("{}-{}-{}", examples["id"][i], examples["label"][i], res)
-                success = True
+                    is_request = get_config(config_file_path, "metadata")["is_request"]
+                    logger.info("Request paused for [{}]", examples["id"][i])
+                    time.sleep(10)
+            except LengthFinishReasonError:
+                logger.warning("Length finish reason error for [{}]", examples["id"][i])
+                expected_num_sentences -= 1
+                if expected_num_sentences <= 0:
+                    if len(SOFT_NUM_SENTENCES_LIMIT_PROMPTS) <= abs(
+                        expected_num_sentences
+                    ):  # If the length is never enough, it will return empty directly and count it as an exception.
+                        logger.warning("No completion for [{}]", examples["id"][i])
+                        if have_response:
+                            examples[reponse_key_name][i] = ""
+                        else:
+                            examples[reponse_key_name].append("")
+                        success = True
+                    else:
+                        soft_num_sentences_limit_prompt = (
+                            SOFT_NUM_SENTENCES_LIMIT_PROMPTS[expected_num_sentences]
+                        )
+                else:
+                    soft_num_sentences_limit_prompt = expected_num_sentences
+
+                req = create_completion_param(
+                    text,
+                    image,
+                    model,
+                    soft_num_sentences_limit_prompt,
+                    temperature,
+                    max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
+                    top_p,
+                    frequency_penalty,
+                    presence_penalty,
+                )
             except Exception:
+                is_request = get_config(config_file_path, "metadata")["is_request"]
 
                 error_count += 1
                 logger.exception("Error in request [{}]", examples["id"][i])
-                time.sleep(60)
+                time.sleep(10)
 
                 if error_count <= 10:
                     error_count += 1
@@ -204,25 +286,18 @@ def openai_requests_map_func(
                     # error_count += 1
                     exclude_keys.clear()
 
-                api_key = get_api_key_from_file(api_keys_file_path, list(exclude_keys))
+                api_key = get_config(
+                    config_file_path, "api_keys", exclude_keys=list(exclude_keys)
+                )
                 client = OpenAI(api_key=api_key)
                 continue
-
-                # logger.error("Too many errors, skipping the rest")
-                # examples[f"{model}_response"].append("")
-                # success = True
-                # error_count = 0
-                # exclude_keys.clear()
-                # api_key = get_api_key_from_file(api_key_file_path)
-                # client = OpenAI(api_key=api_key)
-                # continue
 
     return examples
 
 
 def vllm_requests_map_func(
     examples,
-    base_urls_file_path: str,
+    config_file_path: str,
     model: str = "Qwen/Qwen2-VL-7B-Instruct",
     temperature: float = 1.0,
     max_completion_tokens: int = 256,
@@ -231,10 +306,11 @@ def vllm_requests_map_func(
     presence_penalty: float = 0.0,
 ) -> dict:
 
-    base_url = get_base_url_from_file(base_urls_file_path, model)
-    client = OpenAI(api_key="EMPTY", base_url=base_url)
+    base_url = get_config(config_file_path, "base_urls", model=model)
+    client = OpenAI(api_key="EMPTY", base_url=base_url, max_retries=0)
 
     error_count = 0
+    excluded_base_urls = set()
     have_response = False
 
     reponse_key_name = f"{model.replace('/', '--')}_MuSA"
@@ -252,10 +328,12 @@ def vllm_requests_map_func(
         image = examples["image"][i]
         text = examples["text"][i]
 
+        expected_num_sentences = 5
         req = create_completion_param(
             text,
             image,
             model,
+            expected_num_sentences,
             temperature,
             max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
             top_p,
@@ -263,33 +341,85 @@ def vllm_requests_map_func(
             presence_penalty,
         )
 
+        is_request = True
         success = False
         while not success:
             try:
-                res = client.chat.completions.create(
-                    **req, extra_body=dict(guided_decoding_backend="outlines")
-                )
-                res = res.to_json()
-                if have_response:
-                    examples[reponse_key_name][i] = res
+                if is_request:
+                    with client.beta.chat.completions.stream(
+                        **req, extra_body=dict(guided_decoding_backend="outlines")
+                    ) as st:
+                        res = st.get_final_completion()
+                    res = res.to_json()
+                    if have_response:
+                        examples[reponse_key_name][i] = res
+                    else:
+                        examples[reponse_key_name].append(res)
+                    logger.success(
+                        "{}-{}-{}", examples["id"][i], examples["label"][i], res
+                    )
+                    success = True
                 else:
-                    examples[reponse_key_name].append(res)
-                logger.success("{}-{}-{}", examples["id"][i], examples["label"][i], res)
-                success = True
+                    is_request = get_config(config_file_path, "metadata")["is_request"]
+                    logger.info("Request paused for [{}]", examples["id"][i])
+                    time.sleep(10)
+            except LengthFinishReasonError:
+                logger.warning("Length finish reason error for [{}]", examples["id"][i])
+                expected_num_sentences -= 1
+                if expected_num_sentences <= 0:
+                    if len(SOFT_NUM_SENTENCES_LIMIT_PROMPTS) <= abs(
+                        expected_num_sentences
+                    ):  # If the length is never enough, it will return empty directly and count it as an exception.
+                        logger.warning("No completion for [{}]", examples["id"][i])
+                        if have_response:
+                            examples[reponse_key_name][i] = ""
+                        else:
+                            examples[reponse_key_name].append("")
+                        success = True
+                    else:
+                        soft_num_sentences_limit_prompt = (
+                            SOFT_NUM_SENTENCES_LIMIT_PROMPTS[expected_num_sentences]
+                        )
+                else:
+                    soft_num_sentences_limit_prompt = expected_num_sentences
+
+                req = create_completion_param(
+                    text,
+                    image,
+                    model,
+                    soft_num_sentences_limit_prompt,
+                    temperature,
+                    max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
+                    top_p,
+                    frequency_penalty,
+                    presence_penalty,
+                )
             except Exception:
+                is_request = get_config(config_file_path, "metadata")["is_request"]
 
                 error_count += 1
                 logger.exception("Error in request [{}]", examples["id"][i])
-                time.sleep(60)
+                time.sleep(10)
 
                 if error_count <= 10:
                     error_count += 1
                     continue
 
+                logger.warning("Too many errors, change base url")
+                old_exclude_base_urls_len = len(excluded_base_urls)
+                excluded_base_urls.add(base_url)
+                if old_exclude_base_urls_len == len(excluded_base_urls):
+                    # error_count += 1
+                    excluded_base_urls.clear()
+
                 # if error_count > 10:
-                logger.warning("Too many errors, changing base url")
-                base_url = get_base_url_from_file(base_urls_file_path, model)
-                client = OpenAI(api_key="EMPTY", base_url=base_url)
+                base_url = get_config(
+                    config_file_path,
+                    "base_urls",
+                    model=model,
+                    excluded_base_urls=list(excluded_base_urls),
+                )
+                client = OpenAI(api_key="EMPTY", base_url=base_url, max_retries=0)
                 continue
 
     return examples
