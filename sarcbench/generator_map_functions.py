@@ -10,15 +10,27 @@ from openai import NOT_GIVEN, LengthFinishReasonError, NotGiven, OpenAI
 from PIL.ImageFile import ImageFile
 
 SYSTEM_PROMPT = (
-    lambda x: f"""Analyze the provided text-image pair for sarcasm from both "sarcastic" and "non-sarcastic" perspectives, acknowledging the subjectivity in sarcasm recongnition.
+    lambda x: f"""Analyze the provided text-image pair from both sarcastic and non-sarcastic perspectives, acknowledging the inherent subjectivity in sarcasm recognition.
 
-Follow these steps for each perspective:
+For each perspective, follow these steps independently:
 
-1. **Content Interpretation**: Understand the text and image separately.
-2. **Interaction Analysis**: Identify any incongruities, irony, or exaggerations between the text and image.
-3. **Contextual Evaluation**: Consider cultural or social contexts that may influence sarcasm.
-4. **Confidence Scoring**: Assign an independent confidence score between 0 and 1 for the perspective, without the score being influenced by the other perspective.
-5. **Explanation**: Provide a clear, confident, and reasonable explanation for the score from the respective perspective, explicitly stating "because..." to justify why it is or isn't sarcastic, limited to {x} sentences. Ensure that an explanation is always provided, even if the confidence level is low.
+### 1. **Sarcastic Perspective**
+
+1. **Content Interpretation**: Analyze the text and image separately to understand the content, with a focus on potential irony, exaggeration, or contradictions within the text and image.
+2. **Interaction Analysis**: Identify any incongruities, irony, or exaggerations between the text and the image that may suggest sarcasm. Look for contrasts or mismatches where the text sharply deviates from the image.
+3. **Contextual Evaluation**: Consider any cultural, social, or situational factors that might influence whether the text is interpreted as sarcastic, drawing from common sarcasm markers or humor conventions.
+4. **Confidence Scoring**: Assign a confidence score between 0 and 1 for the sarcastic perspective, **independent of the non-sarcastic score**. The score should reflect how strongly the text-image pair suggests sarcasm.
+5. **Explanation**: Provide a clear and confident explanation for the sarcastic score. The explanation should justify the score by clearly stating why the pair is sarcastic, with reasoning that flows logically. Ensure the explanation is concise (limit to {x} sentences) and assertive, even if the score is low.
+
+### 2. **Non-Sarcastic Perspective**
+
+1. **Content Interpretation**: Analyze the text and image separately, focusing on how the text could be understood literally, or without irony, in relation to the image.
+2. **Interaction Analysis**: Evaluate whether the text and image align in a way that supports a non-ironic or straightforward interpretation. Look for direct relationships between the text and the image without contradiction or exaggeration.
+3. **Contextual Evaluation**: Consider cultural, social, or situational contexts where the text might be interpreted in a non-sarcastic manner, such as simple observations or positive expressions that are consistent with the image.
+4. **Confidence Scoring**: Assign a confidence score between 0 and 1 for the non-sarcastic perspective, **independent of the sarcastic score**. The score should reflect how likely the text-image pair is interpreted in a non-sarcastic way.
+5. **Explanation**: Provide a clear and confident explanation for the non-sarcastic score. Justify why the pair is not sarcastic by explaining the reasoning in a cause-and-effect manner. The explanation should be concise (limit to {x} sentences), confident, and assertive, even if the confidence is low.
+
+**Note**: The confidence scores for `sarcastic` and `non-sarcastic` are independent and do not need to add up to 1. Both perspectives should be evaluated and scored independently.
 """
 )
 
@@ -222,7 +234,8 @@ def openai_requests_map_func(
         while not success:
             try:
                 if is_request:
-                    res = client.chat.completions.create(**req)
+                    with client.beta.chat.completions.stream(**req) as st:
+                        res = st.get_final_completion()
                     res = res.to_json()
                     if have_response:
                         examples[reponse_key_name][i] = res
