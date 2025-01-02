@@ -47,6 +47,12 @@ from sarcbench.generator_map_functions import (
     default=-1,
     help="Number of debug samples (for testing)",
 )
+@click.option(
+    "--seed",
+    type=int,
+    default=42,
+    help="Seed for reproducibility",
+)
 def run_sarcasm_bench(
     dataset_path: str,
     dataset_name: Optional[str],
@@ -54,6 +60,7 @@ def run_sarcasm_bench(
     config_file_path: str,
     output_path: Path,
     num_debug_samples: int,
+    seed: int,
 ) -> None:
     pass
 
@@ -67,6 +74,7 @@ def process_pipeline(
     config_file_path: str,
     output_path: Path,
     num_debug_samples: int,
+    seed: int,
 ):
     try:
         datasets = load_dataset(dataset_path, dataset_name, split=dataset_split)
@@ -87,7 +95,7 @@ def process_pipeline(
             dataset = dataset.select(range(num_debug_samples))
 
         for processor in processors:
-            dataset = processor(dataset, config_file_path)
+            dataset = processor(dataset, config_file_path, seed)
 
         finished_datasets[key] = dataset
 
@@ -104,26 +112,10 @@ def process_pipeline(
 @run_sarcasm_bench.command("openai", help="Run OpenAI processor")
 @click.option("--model", type=str, default="gpt-4o", help="Model to use")
 @click.option("--num-proc", type=int, default=-1, help="Number of processes to use")
-@click.option("--temperature", type=float, default=0.0, help="Temperature")
-@click.option(
-    "--max-completion-tokens", type=int, default=-1, help="Max completion tokens"
-)
-@click.option("--top-p", type=float, default=1.0, help="Top p")
-@click.option("--frequency-penalty", type=float, default=0.0, help="Frequency penalty")
-@click.option("--presence-penalty", type=float, default=0.0, help="Presence penalty")
 def run_openai(
     model: str,
     num_proc: int,
-    temperature: float,
-    max_completion_tokens: int,
-    top_p: float,
-    frequency_penalty: float,
-    presence_penalty: float,
 ):
-
-    logger.info(
-        f"Sampling parameters: {{temperature={temperature}, max_completion_tokens={max_completion_tokens}, top_p={top_p}, frequency_penalty={frequency_penalty}, presence_penalty={presence_penalty}}}"
-    )
 
     if num_proc <= 0:
         cpucount = os.cpu_count()
@@ -132,17 +124,13 @@ def run_openai(
         num_proc = int(cpucount * 0.8)
     logger.info(f"num_proc: {num_proc}")
 
-    def processor(dataset, config_path):
+    def processor(dataset, config_path, seed):
         dataset = dataset.map(
             partial(
                 openai_requests_map_func,
                 config_file_path=config_path,
                 model=model,
-                temperature=temperature,
-                max_completion_tokens=max_completion_tokens,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
+                seed=seed,
             ),
             batched=True,
             num_proc=num_proc,
@@ -157,26 +145,10 @@ def run_openai(
     "--model", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Model to use"
 )
 @click.option("--num-proc", type=int, default=-1, help="Number of processes to use")
-@click.option("--temperature", type=float, default=0.0, help="Temperature")
-@click.option(
-    "--max-completion-tokens", type=int, default=-1, help="Max completion tokens"
-)
-@click.option("--top-p", type=float, default=1.0, help="Top p")
-@click.option("--frequency-penalty", type=float, default=0.0, help="Frequency penalty")
-@click.option("--presence-penalty", type=float, default=0.0, help="Presence penalty")
 def run_vllm(
     model: str,
     num_proc: int,
-    temperature: float,
-    max_completion_tokens: int,
-    top_p: float,
-    frequency_penalty: float,
-    presence_penalty: float,
 ):
-
-    logger.info(
-        f"Sampling parameters: {{temperature={temperature}, max_completion_tokens={max_completion_tokens}, top_p={top_p}, frequency_penalty={frequency_penalty}, presence_penalty={presence_penalty}}}"
-    )
 
     if num_proc <= 0:
         cpucount = os.cpu_count()
@@ -185,17 +157,13 @@ def run_vllm(
         num_proc = int(cpucount * 0.8)
     logger.info(f"num_proc: {num_proc}")
 
-    def processor(dataset, config_path):
+    def processor(dataset, config_path, seed):
         dataset = dataset.map(
             partial(
                 vllm_requests_map_func,
                 config_file_path=config_path,
                 model=model,
-                temperature=temperature,
-                max_completion_tokens=max_completion_tokens,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
+                seed=seed,
             ),
             batched=True,
             num_proc=num_proc,

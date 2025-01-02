@@ -18,6 +18,9 @@ click = "^8.1.7"
 loguru = "^0.7.2"
 accelerate = "^1.1.1"
 vllm = "0.6.4"
+evaluate = "^0.4.3"
+scikit-learn = "^1.5.2"
+torchmetrics = "^1.6.0"
 
 
 [tool.poetry.group.dev.dependencies]

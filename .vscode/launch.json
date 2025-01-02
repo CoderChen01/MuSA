@@ -5,6 +5,29 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "run vllm",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vllm_serve.py",
+      "args": [
+        "serve",
+        "llava-hf/llava-1.5-7b-hf",
+        "--task",
+        "generate",
+        "--trust-remote-code",
+        "--limit-mm-per-prompt",
+        "image=1",
+        "--chat-template",
+        "chat_templates/llava.jinja",
+        "--max-num-seqs",
+        "1"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+
+    // llava-hf/llava-1.5-7b-hf  --task generate --trust-remote-code  --limit-mm-per-prompt image=1 --chat-template chat_templates/llava.jinja  --max-num-seqs 1
+    {
       "name": "run_openai",
       "type": "debugpy",
       "request": "launch",

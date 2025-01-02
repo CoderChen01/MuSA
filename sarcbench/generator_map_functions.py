@@ -71,63 +71,90 @@ RESPONSE_FORMAT = lambda x: {
 }
 
 
-SOFT_NUM_SENTENCES_LIMIT_PROMPTS = [
-    "very short",
-    "a few",
-    "several",
-    "minimal",
-    "very compact",
-    "vary succinct",
-    "only a handlful of",
-]
-
-
 def image_to_base64(image: ImageFile) -> str:
     with BytesIO() as buffered:
         image.save(buffered, format="JPEG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 
-def create_completion_param(
-    text: str,
-    image: ImageFile,
-    model: str,
-    soft_num_sentences_limit_prompt: Union[int, str] = 5,
-    temperature: float = 1.0,
-    max_completion_tokens: Union[int, NotGiven] = 256,
-    top_p: float = 1.0,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.0,
-) -> dict:
-    image_base64 = image_to_base64(image)
-    image_data = f"data:image/jpeg;base64,{image_base64}"
+class CompletionParamBuilder:
 
-    messages = [
-        {
-            "role": "system",
-            "content": [
-                {"type": "text", "text": SYSTEM_PROMPT(soft_num_sentences_limit_prompt)}
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": image_data}},
-                {"type": "text", "text": text},
-            ],
-        },
+    soft_num_sentences_limit_prompts = [
+        "very short",
+        "a few",
+        "several",
+        "minimal",
+        "very compact",
+        "vary succinct",
+        "only a handlful of",
     ]
 
-    return {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_completion_tokens": max_completion_tokens,
-        "top_p": top_p,
-        "frequency_penalty": frequency_penalty,
-        "presence_penalty": presence_penalty,
-        "response_format": RESPONSE_FORMAT(soft_num_sentences_limit_prompt),
-    }
+    def __init__(self, seed: int) -> None:
+        self._temperature = 0.0
+        self._seed = seed
+
+        self._num_sentences = 5
+
+        self._soft_prompt = self._num_sentences
+
+    def __call__(
+        self,
+        text: str,
+        image: ImageFile,
+        model: str,
+    ) -> dict:
+        image_base64 = image_to_base64(image)
+        image_data = f"data:image/jpeg;base64,{image_base64}"
+
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT(self._soft_prompt),
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_data}},
+                    {"type": "text", "text": text},
+                ],
+            },
+        ]
+        response_format = RESPONSE_FORMAT(self._soft_prompt)
+
+        self._num_sentences -= 1
+        if self._num_sentences <= 0:
+            if len(self.soft_num_sentences_limit_prompts) <= abs(
+                self._num_sentences
+            ):  # If the length is never enough, it will return empty directly and count it as an exception.
+                self._soft_prompt = 5
+                self._temperature += 0.1
+                if self._temperature >= 1.0:
+                    self._temperature = 1.0
+                if self._temperature == 1.0:
+                    self._seed += 10
+            else:
+                self._soft_prompt = self.soft_num_sentences_limit_prompts[
+                    self._num_sentences
+                ]
+        else:
+            self._soft_prompt = self._num_sentences
+
+        return {
+            "model": model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "max_completion_tokens": NOT_GIVEN,
+            "top_p": 1.0,
+            "seed": NOT_GIVEN if self._temperature == 0.0 else self._seed,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "response_format": response_format,
+        }
 
 
 def get_api_key(keys: list[str], exclude_keys: Optional[list[str]] = None) -> str:
@@ -187,11 +214,7 @@ def openai_requests_map_func(
     examples,
     config_file_path: str,
     model: str = "gpt-4o",
-    temperature: float = 1.0,
-    max_completion_tokens: int = 256,
-    top_p: float = 1.0,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.0,
+    seed: int = 42,
 ) -> dict:
 
     api_key = get_config(config_file_path, "api_keys")
@@ -216,18 +239,8 @@ def openai_requests_map_func(
         image = examples["image"][i]
         text = examples["text"][i]
 
-        expected_num_sentences = 5
-        req = create_completion_param(
-            text,
-            image,
-            model,
-            expected_num_sentences,
-            temperature,
-            max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
-            top_p,
-            frequency_penalty,
-            presence_penalty,
-        )
+        req_builder = CompletionParamBuilder(seed)
+        req = req_builder(text, image, model)
 
         is_request = True
         success = False
@@ -251,35 +264,8 @@ def openai_requests_map_func(
                     time.sleep(10)
             except LengthFinishReasonError:
                 logger.warning("Length finish reason error for [{}]", examples["id"][i])
-                expected_num_sentences -= 1
-                if expected_num_sentences <= 0:
-                    if len(SOFT_NUM_SENTENCES_LIMIT_PROMPTS) <= abs(
-                        expected_num_sentences
-                    ):  # If the length is never enough, it will return empty directly and count it as an exception.
-                        logger.warning("No completion for [{}]", examples["id"][i])
-                        if have_response:
-                            examples[reponse_key_name][i] = ""
-                        else:
-                            examples[reponse_key_name].append("")
-                        success = True
-                    else:
-                        soft_num_sentences_limit_prompt = (
-                            SOFT_NUM_SENTENCES_LIMIT_PROMPTS[expected_num_sentences]
-                        )
-                else:
-                    soft_num_sentences_limit_prompt = expected_num_sentences
-
-                req = create_completion_param(
-                    text,
-                    image,
-                    model,
-                    soft_num_sentences_limit_prompt,
-                    temperature,
-                    max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
-                    top_p,
-                    frequency_penalty,
-                    presence_penalty,
-                )
+                req = req_builder(text, image, model)
+                logger.info("Retry with [{}]", req)
             except Exception:
                 is_request = get_config(config_file_path, "metadata")["is_request"]
 
@@ -312,11 +298,7 @@ def vllm_requests_map_func(
     examples,
     config_file_path: str,
     model: str = "Qwen/Qwen2-VL-7B-Instruct",
-    temperature: float = 1.0,
-    max_completion_tokens: int = 256,
-    top_p: float = 1.0,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.0,
+    seed: int = 42,
 ) -> dict:
 
     base_url = get_config(config_file_path, "base_urls", model=model)
@@ -341,18 +323,8 @@ def vllm_requests_map_func(
         image = examples["image"][i]
         text = examples["text"][i]
 
-        expected_num_sentences = 5
-        req = create_completion_param(
-            text,
-            image,
-            model,
-            expected_num_sentences,
-            temperature,
-            max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
-            top_p,
-            frequency_penalty,
-            presence_penalty,
-        )
+        req_builder = CompletionParamBuilder(seed)
+        req = req_builder(text, image, model)
 
         is_request = True
         success = False
@@ -378,35 +350,8 @@ def vllm_requests_map_func(
                     time.sleep(10)
             except LengthFinishReasonError:
                 logger.warning("Length finish reason error for [{}]", examples["id"][i])
-                expected_num_sentences -= 1
-                if expected_num_sentences <= 0:
-                    if len(SOFT_NUM_SENTENCES_LIMIT_PROMPTS) <= abs(
-                        expected_num_sentences
-                    ):  # If the length is never enough, it will return empty directly and count it as an exception.
-                        logger.warning("No completion for [{}]", examples["id"][i])
-                        if have_response:
-                            examples[reponse_key_name][i] = ""
-                        else:
-                            examples[reponse_key_name].append("")
-                        success = True
-                    else:
-                        soft_num_sentences_limit_prompt = (
-                            SOFT_NUM_SENTENCES_LIMIT_PROMPTS[expected_num_sentences]
-                        )
-                else:
-                    soft_num_sentences_limit_prompt = expected_num_sentences
-
-                req = create_completion_param(
-                    text,
-                    image,
-                    model,
-                    soft_num_sentences_limit_prompt,
-                    temperature,
-                    max_completion_tokens if max_completion_tokens > 0 else NOT_GIVEN,
-                    top_p,
-                    frequency_penalty,
-                    presence_penalty,
-                )
+                req = req_builder(text, image, model)
+                logger.info("Retry with [{}]", req)
             except Exception:
                 is_request = get_config(config_file_path, "metadata")["is_request"]
 
